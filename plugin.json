@@ -3,5 +3,8 @@
   "name": "Section Map",
   "version": "1.0.0",
   "private": false,
-  "script": "screen.js"
+  "script": "screen.js",
+  "category": "practice",
+  "description": "Visual song-section map and navigation.",
+  "icon": "assets/thumb.svg"
 }
