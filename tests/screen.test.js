@@ -101,6 +101,19 @@ test('_smOnClick routes the clicked fraction through the host seek funnel', () =
     assert.equal(audio.currentTime, 0, 'must not poke the raw element when the funnel exists');
 });
 
+test('_smOnClick clamps a right-edge overshoot to the song duration', () => {
+    const mod = freshPlugin();
+    const bar = new FakeBar();
+    bar.width = 500;
+    const seeks = [];
+    global.window.feedBack = { seek: (t, reason) => seeks.push([t, reason]) };
+    global.document = { getElementById: () => null };
+    mod._setState({ bar, sections: [{ name: 'Intro', time: 0 }], duration: 100 });
+
+    mod._smOnClick({ clientX: 505 }); // pct = 1.01 -> would be 101s without the clamp
+    assert.deepEqual(seeks, [[100, 'sectionmap-click']]);
+});
+
 test('_smNow reads the host clock (getTime) so a wheel nudge starts from real position', () => {
     const mod = freshPlugin();
     global.highway = { getTime: () => 42 };

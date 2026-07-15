@@ -72,7 +72,10 @@ function _smNow() {
 // seeking — they land in an unbuffered/unstreamed region and snap back. The raw
 // path stays only as a fallback for a host old enough to lack the seek API.
 function _smSeek(time, reason) {
-    const t = Math.max(0, time);
+    // Clamp centrally so every caller (click passes a raw pct*duration; a pct
+    // just over 1 at the bar's right edge would otherwise seek past the end).
+    const max = (typeof _smDuration === 'number' && _smDuration > 0) ? _smDuration : Infinity;
+    const t = Math.max(0, Math.min(max, time));
     const host = (typeof window !== 'undefined') && (window.feedBack || window.slopsmith);
     if (host && typeof host.seek === 'function') {
         host.seek(t, reason);
