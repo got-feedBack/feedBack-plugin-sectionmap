@@ -50,21 +50,42 @@ function _smRemove() {
     }
 }
 
-function _smOnClick(e) {
-    if (!_smDuration) return;
-    const rect = _smBar.getBoundingClientRect();
-    const pct = (e.clientX - rect.left) / rect.width;
-    const time = pct * _smDuration;
+// The playback clock, across whichever backend is driving audio. getTime() is
+// the audio-aligned clock the host exposes to plugins; the raw <audio> element
+// is only a fallback (and is stale when a native/streaming backend is playing).
+function _smNow() {
+    if (typeof highway !== 'undefined' && highway && typeof highway.getTime === 'function') {
+        const t = highway.getTime();
+        if (Number.isFinite(t)) return t;
+    }
+    const audio = document.getElementById('audio');
+    return audio && Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+}
+
+// Reposition through the host's canonical seek funnel (window.feedBack.seek ->
+// _audioSeek). It moves whichever backend is ACTUALLY playing — JUCE native
+// output, or the bounded-memory stem-streaming worklet, which only reseeks in
+// response to the song:seek event the funnel emits — and keeps the highway
+// clock in sync. Poking audio.currentTime directly only relocates regions the
+// <audio> element has already buffered near the playhead, so once playback
+// moved off that element (native routing + stem streaming) far sections stopped
+// seeking — they land in an unbuffered/unstreamed region and snap back. The raw
+// path stays only as a fallback for a host old enough to lack the seek API.
+function _smSeek(time, reason) {
+    const t = Math.max(0, time);
+    const host = (typeof window !== 'undefined') && (window.feedBack || window.slopsmith);
+    if (host && typeof host.seek === 'function') {
+        host.seek(t, reason);
+        return;
+    }
     const audio = document.getElementById('audio');
     if (!audio) return;
-
-    // Update lastAudioTime to prevent the jump detector from resetting
-    if (typeof lastAudioTime !== 'undefined') lastAudioTime = time;
-
-    // Pause, seek, then resume — seeking during playback fails on unbuffered regions
+    // Legacy fallback: keep the jump detector from reverting the seek, and
+    // pause/seek/resume because seeking during playback fails on unbuffered regions.
+    if (typeof lastAudioTime !== 'undefined') lastAudioTime = t;
     const wasPlaying = !audio.paused;
     if (wasPlaying) audio.pause();
-    audio.currentTime = Math.max(0, time);
+    audio.currentTime = t;
     if (wasPlaying) {
         audio.addEventListener('seeked', function resume() {
             audio.removeEventListener('seeked', resume);
@@ -73,31 +94,21 @@ function _smOnClick(e) {
     }
 }
 
+function _smOnClick(e) {
+    if (!_smDuration) return;
+    const rect = _smBar.getBoundingClientRect();
+    const pct = (e.clientX - rect.left) / rect.width;
+    _smSeek(pct * _smDuration, 'sectionmap-click');
+}
+
 function _smOnWheel(e) {
     if (!_smDuration) return;
     e.preventDefault();
-
-    const audio = document.getElementById('audio');
-    if (!audio) return;
-
-    // Calculate time delta: up (negative deltaY) = forward, down (positive deltaY) = backward
+    // up (negative deltaY) = forward, down (positive deltaY) = backward
     const increment = e.ctrlKey ? 0.1 : 1; // Fine control with Ctrl modifier
-    const deltaTime = -(e.deltaY > 0 ? 1 : -1) * increment; // Negate to match scroll direction to time direction
-    const newTime = Math.max(0, Math.min(_smDuration, audio.currentTime + deltaTime));
-
-    // Update lastAudioTime to prevent the jump detector from resetting
-    if (typeof lastAudioTime !== 'undefined') lastAudioTime = newTime;
-
-    // Pause, seek, then resume — seeking during playback fails on unbuffered regions
-    const wasPlaying = !audio.paused;
-    if (wasPlaying) audio.pause();
-    audio.currentTime = newTime;
-    if (wasPlaying) {
-        audio.addEventListener('seeked', function resume() {
-            audio.removeEventListener('seeked', resume);
-            audio.play();
-        }, { once: true });
-    }
+    const deltaTime = -(e.deltaY > 0 ? 1 : -1) * increment;
+    const newTime = Math.max(0, Math.min(_smDuration, _smNow() + deltaTime));
+    _smSeek(newTime, 'sectionmap-wheel');
 }
 
 function _smUpdate() {
