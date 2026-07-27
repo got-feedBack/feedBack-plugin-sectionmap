@@ -4,6 +4,10 @@
 let _smBar = null;
 let _smSections = [];
 let _smDuration = 0;
+let _smDrag = null;
+let _smSuppressNextClick = false;
+
+const SM_DRAG_THRESHOLD_PX = 6;
 
 const SM_COLORS = {
     'intro': '#3b82f6',
@@ -34,20 +38,34 @@ function _smCreate() {
 
     _smBar = document.createElement('div');
     _smBar.id = 'section-map';
-    _smBar.style.cssText = 'position:absolute;top:0;left:0;right:0;z-index:5;height:20px;background:rgba(8,8,16,0.7);cursor:pointer;';
+    _smBar.style.cssText = 'position:absolute;top:0;left:0;right:0;z-index:25;height:20px;background:rgba(8,8,16,0.7);cursor:pointer;touch-action:none;';
 
     // Insert as first child of player (very top)
     player.insertBefore(_smBar, player.firstChild);
 
     _smBar.addEventListener('click', _smOnClick);
     _smBar.addEventListener('wheel', _smOnWheel, { passive: false });
+    _smBar.addEventListener('pointerdown', _smOnPointerDown, { passive: true });
+    _smBar.addEventListener('pointermove', _smOnPointerMove, { passive: false });
+    _smBar.addEventListener('pointerup', _smOnPointerUp, { passive: false });
+    _smBar.addEventListener('pointercancel', _smOnPointerCancel, { passive: true });
+    _smBar.addEventListener('lostpointercapture', _smOnLostPointerCapture, { passive: true });
 }
 
 function _smRemove() {
+    _smClearDrag();
     if (_smBar) {
+        _smBar.removeEventListener('click', _smOnClick);
+        _smBar.removeEventListener('wheel', _smOnWheel);
+        _smBar.removeEventListener('pointerdown', _smOnPointerDown);
+        _smBar.removeEventListener('pointermove', _smOnPointerMove);
+        _smBar.removeEventListener('pointerup', _smOnPointerUp);
+        _smBar.removeEventListener('pointercancel', _smOnPointerCancel);
+        _smBar.removeEventListener('lostpointercapture', _smOnLostPointerCapture);
         _smBar.remove();
         _smBar = null;
     }
+    _smSuppressNextClick = false;
 }
 
 // The playback clock, across whichever backend is driving audio. getTime() is
@@ -99,6 +117,12 @@ function _smSeek(time, reason) {
 
 function _smOnClick(e) {
     if (!_smDuration) return;
+    if (_smSuppressNextClick) {
+        _smSuppressNextClick = false;
+        e.preventDefault?.();
+        e.stopPropagation?.();
+        return;
+    }
     const rect = _smBar.getBoundingClientRect();
     const pct = (e.clientX - rect.left) / rect.width;
     _smSeek(pct * _smDuration, 'sectionmap-click');
@@ -112,6 +136,156 @@ function _smOnWheel(e) {
     const deltaTime = -(e.deltaY > 0 ? 1 : -1) * increment;
     const newTime = Math.max(0, Math.min(_smDuration, _smNow() + deltaTime));
     _smSeek(newTime, 'sectionmap-wheel');
+}
+
+function _smOnPointerDown(e) {
+    if (!_smBar || !_smDuration || _smDrag) return;
+    if (e.isPrimary === false) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+    _smSuppressNextClick = false;
+    _smDrag = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        active: false,
+        captured: false,
+        markerTransition: null,
+        labelText: null,
+        labelWidth: 0,
+    };
+}
+
+function _smOnPointerMove(e) {
+    if (!_smDrag || e.pointerId !== _smDrag.pointerId || !_smBar || !_smDuration) return;
+
+    if (!_smDrag.active) {
+        const dx = e.clientX - _smDrag.startX;
+        const dy = e.clientY - _smDrag.startY;
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+        if (absDx < SM_DRAG_THRESHOLD_PX || absDx <= absDy) return;
+        _smStartDragPreview(e);
+    }
+
+    e.preventDefault?.();
+    _smPreviewAtClientX(e.clientX);
+}
+
+function _smOnPointerUp(e) {
+    if (!_smDrag || e.pointerId !== _smDrag.pointerId) return;
+    const wasActive = _smDrag.active;
+    const fraction = _smPointerFraction(e.clientX);
+    _smClearDrag();
+
+    if (!wasActive || !_smDuration) return;
+    _smPreviewMarker(fraction);
+    _smSeek(fraction * _smDuration, 'sectionmap-drag');
+    _smSuppressNextClick = true;
+    e.preventDefault?.();
+    e.stopPropagation?.();
+}
+
+function _smOnPointerCancel(e) {
+    if (_smDrag && e.pointerId === _smDrag.pointerId) {
+        _smClearDrag();
+    }
+}
+
+function _smOnLostPointerCapture(e) {
+    if (_smDrag && e.pointerId === _smDrag.pointerId) {
+        if (e.target && e.target !== _smBar) return;
+        _smClearDrag({ releaseCapture: false });
+    }
+}
+
+function _smOnScreenChanging(e) {
+    const detail = e && e.detail;
+    if (detail && detail.from === 'player' && detail.id !== 'player') {
+        _smRemove();
+    }
+}
+
+function _smStartDragPreview(e) {
+    const marker = document.getElementById('sm-marker');
+    _smDrag.active = true;
+    _smDrag.markerTransition = marker ? marker.style.transition : null;
+
+    try {
+        _smBar.setPointerCapture?.(e.pointerId);
+        _smDrag.captured = true;
+    } catch (_) {
+        _smDrag.captured = false;
+    }
+}
+
+function _smPreviewAtClientX(clientX) {
+    const fraction = _smPointerFraction(clientX);
+    _smPreviewMarker(fraction, { drag: true });
+    _smPreviewTimeLabel(fraction);
+}
+
+function _smPreviewMarker(fraction, opts = {}) {
+    const marker = document.getElementById('sm-marker');
+    if (!marker) return;
+    if (opts.drag) marker.style.transition = 'none';
+    marker.style.left = (_smClampFraction(fraction) * 100) + '%';
+}
+
+function _smPreviewTimeLabel(fraction) {
+    const label = document.getElementById('sm-drag-time');
+    if (!label || !_smBar || !_smDuration || !_smDrag) return;
+
+    const clamped = _smClampFraction(fraction);
+    const text = _smFmt(clamped * _smDuration) + ' / ' + _smFmt(_smDuration);
+    label.style.display = 'block';
+    if (_smDrag.labelText !== text) {
+        label.textContent = text;
+        _smDrag.labelText = text;
+        _smDrag.labelWidth = label.offsetWidth;
+    }
+
+    const rect = _smBar.getBoundingClientRect();
+    const halfWidth = Math.min(_smDrag.labelWidth / 2, rect.width / 2);
+    const x = Math.max(halfWidth, Math.min(rect.width - halfWidth, clamped * rect.width));
+    label.style.left = x + 'px';
+}
+
+function _smHideTimeLabel() {
+    const label = document.getElementById('sm-drag-time');
+    if (label) label.style.display = 'none';
+}
+
+function _smClearDrag(opts = {}) {
+    const drag = _smDrag;
+    _smHideTimeLabel();
+    if (!drag) return;
+    _smDrag = null;
+
+    const marker = document.getElementById('sm-marker');
+    if (marker && drag.markerTransition != null) {
+        marker.style.transition = drag.markerTransition;
+    }
+
+    if (opts.releaseCapture !== false && drag.captured && _smBar) {
+        try {
+            _smBar.releasePointerCapture?.(drag.pointerId);
+        } catch (_) {
+            /* ignore */
+        }
+    }
+}
+
+function _smPointerFraction(clientX) {
+    if (!_smBar) return 0;
+    const rect = _smBar.getBoundingClientRect();
+    if (!rect.width) return 0;
+    return _smClampFraction((clientX - rect.left) / rect.width);
+}
+
+function _smClampFraction(value) {
+    if (!Number.isFinite(value)) return 0;
+    return Math.max(0, Math.min(1, value));
 }
 
 function _smUpdate() {
@@ -132,7 +306,7 @@ function _smUpdate() {
 
     // Update playback position indicator
     const marker = document.getElementById('sm-marker');
-    if (marker && _smDuration > 0) {
+    if (marker && _smDuration > 0 && !(_smDrag && _smDrag.active)) {
         const pct = (t / _smDuration) * 100;
         marker.style.left = pct + '%';
     }
@@ -174,6 +348,9 @@ function _smRender() {
     // Playback position marker
     html += '<div id="sm-marker" style="position:absolute;top:0;bottom:0;width:2px;background:white;z-index:1;pointer-events:none;transition:left 0.1s linear;"></div>';
 
+    // Active drag target time
+    html += '<div id="sm-drag-time" style="position:absolute;top:calc(100% + 4px);left:0;display:none;transform:translateX(-50%);z-index:20;padding:2px 6px;border-radius:4px;background:rgba(8,8,16,0.92);color:white;font-size:11px;line-height:1.2;white-space:nowrap;pointer-events:none;box-shadow:0 1px 4px rgba(0,0,0,0.45);"></div>';
+
     _smBar.innerHTML = html;
     _smBar.style.position = 'relative';
 }
@@ -183,24 +360,34 @@ function _smFmt(s) {
 }
 
 // Node-only export hook for tests; browsers fall through to the side-effect
-// IIFE below (poller + playSong/showScreen wrapping).
+// IIFE below (poller + screen lifecycle hook + playSong wrapper).
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
         _smGetColor, _smFmt, _smCreate, _smRemove, _smUpdate, _smRender,
-        _smOnClick, _smOnWheel,
-        _getState: () => ({ bar: _smBar, sections: _smSections, duration: _smDuration }),
+        _smOnClick, _smOnWheel, _smOnPointerDown, _smOnPointerMove,
+        _smOnPointerUp, _smOnPointerCancel, _smOnLostPointerCapture,
+        _smOnScreenChanging,
+        _getState: () => ({
+            bar: _smBar,
+            sections: _smSections,
+            duration: _smDuration,
+            drag: _smDrag,
+            suppressNextClick: _smSuppressNextClick,
+        }),
         _setState(next) {
             if ('sections' in next) _smSections = next.sections;
             if ('duration' in next) _smDuration = next.duration;
             if ('bar' in next) _smBar = next.bar;
+            if ('drag' in next) _smDrag = next.drag;
+            if ('suppressNextClick' in next) _smSuppressNextClick = next.suppressNextClick;
         },
     };
 } else {
 
-// Side effects: poller + playSong/showScreen wrappers. Consolidated under
-// one idempotency guard so re-evaluation (loader cache miss, hot reload,
-// older core builds without the load-side guard) doesn't start a second
-// 5Hz poller and doesn't grow either wrapper chain.
+// Side effects: poller, screen lifecycle hook, and playSong wrapper. Consolidated
+// under one idempotency guard so re-evaluation (loader cache miss, hot reload,
+// older core builds without the load-side guard) doesn't start a second 5Hz
+// poller, duplicate the screen subscription, or grow the playSong wrapper chain.
 (function() {
     const HOOK_KEY = '__slopsmithSectionMapHooksInstalled';
     if (window[HOOK_KEY]) return;
@@ -208,6 +395,10 @@ if (typeof module !== 'undefined' && module.exports) {
 
     // Poll for updates
     setInterval(_smUpdate, 200);
+
+    if (window.feedBack && typeof window.feedBack.on === 'function') {
+        window.feedBack.on('screen:changing', _smOnScreenChanging);
+    }
 
     // Hook into playSong
     const origPlaySong = window.playSong;
@@ -219,12 +410,6 @@ if (typeof module !== 'undefined' && module.exports) {
         _smCreate();
     };
 
-    // Clean up when leaving player
-    const origShowScreen = window.showScreen;
-    window.showScreen = function(id) {
-        if (id !== 'player') _smRemove();
-        origShowScreen(id);
-    };
 })();
 
 }
