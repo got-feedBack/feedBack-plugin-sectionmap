@@ -58,6 +58,14 @@ test('_smFmt formats seconds as m:ss with zero-padded seconds', () => {
     assert.equal(mod._smFmt(600), '10:00');
 });
 
+test('_smEscapeHtml neutralizes section-name markup in text and attributes', () => {
+    const mod = freshPlugin();
+    assert.equal(
+        mod._smEscapeHtml('<img src=x onerror="alert(1)">\'&'),
+        '&lt;img src=x onerror=&quot;alert(1)&quot;&gt;&#39;&amp;',
+    );
+});
+
 test('_smRender builds one .sm-block-tagged div per section plus a position marker', () => {
     const mod = freshPlugin();
     const bar = new FakeBar();
