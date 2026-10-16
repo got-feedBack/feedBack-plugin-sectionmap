@@ -1,6 +1,6 @@
-# Slopsmith Plugin: Section Map
+# feedBack Plugin: Section Map
 
-A plugin for [Slopsmith](https://github.com/got-feedback/feedback) that shows a minimap bar of the full song structure at the top of the player. Click any section to jump to it.
+A plugin for [feedBack](https://github.com/got-feedBack/feedBack) that shows a minimap bar of the full song structure at the top of the player. Click any section to jump to it.
 
 ## Features
 
@@ -13,8 +13,8 @@ A plugin for [Slopsmith](https://github.com/got-feedback/feedback) that shows a 
 ## Installation
 
 ```bash
-cd /path/to/slopsmith/plugins
-git clone https://github.com/got-feedback/feedback-plugin-sectionmap.git section_map
+cd /path/to/feedBack/plugins
+git clone https://github.com/got-feedBack/feedBack-plugin-sectionmap.git section_map
 docker compose restart
 ```
 
